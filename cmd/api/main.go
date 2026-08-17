@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	httpapi "github.com/javin1106/airport/internal/httpapi"
 	"log"
 	"net/http"
 	"time"
@@ -13,7 +14,7 @@ type healthResponse struct {
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type ", "application/json")
+	w.Header().Set("Content-Type", "application/json")
 
 	response := healthResponse{
 		Status:  "ok",
@@ -28,6 +29,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
+	mux.HandleFunc("POST /deploy", httpapi.HandleDeploy)
 
 	server := &http.Server{
 		Addr:              ":8080",
