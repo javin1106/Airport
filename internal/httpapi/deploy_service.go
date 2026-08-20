@@ -1,12 +1,17 @@
 package internal
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/javin1106/airport/internal/gitrepo"
 )
 
 type deployRequest struct {
@@ -51,9 +56,23 @@ func HandleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cloneContext, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+
+	destination := filepath.Join("output", deploymentID)
+	if err := gitrepo.Clone(cloneContext, request.RepoURL, destination); err != nil {
+		log.Printf("failed to clone the repository: %v", err)
+
+		writeJSON(w, http.StatusUnprocessableEntity, errorResponse{
+			Error: "failed to clone repository",
+		})
+
+		return
+	}
+
 	writeJSON(w, http.StatusAccepted, deployResponse{
 		ID:     deploymentID,
-		Status: "accepted",
+		Status: "cloned",
 	})
 }
 
