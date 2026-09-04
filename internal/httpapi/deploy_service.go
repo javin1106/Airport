@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/javin1106/airport/internal/gitrepo"
+	"github.com/javin1106/airport/internal/sourcearchive"
 )
 
 type deployRequest struct {
@@ -70,9 +71,19 @@ func HandleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	archivePath := filepath.Join("output", deploymentID+".tar.gz")
+	if err := sourcearchive.Create(destination, archivePath); err != nil {
+		log.Printf("failed to archive repository: %v", err)
+
+		writeJSON(w, http.StatusInternalServerError, errorResponse{
+			Error: "failed to archive repository",
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusAccepted, deployResponse{
 		ID:     deploymentID,
-		Status: "cloned",
+		Status: "archived",
 	})
 }
 
