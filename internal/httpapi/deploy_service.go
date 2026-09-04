@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,7 +29,23 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func HandleDeploy(w http.ResponseWriter, r *http.Request) {
+type archiveStore interface {
+	UploadArchive(
+		ctx context.Context,
+		deploymentID string,
+		archivePath string,
+	) (string, error)
+}
+
+type DeployHandler struct {
+	store archiveStore
+}
+
+func NewDeployHandler(store archiveStore) *DeployHandler {
+	return &DeployHandler{store: store}
+}
+
+func (handler *DeployHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var request deployRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -61,6 +78,17 @@ func HandleDeploy(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	destination := filepath.Join("output", deploymentID)
+	archivePath := filepath.Join("output", deploymentID+".tar.gz")
+	defer func() {
+		if err := os.RemoveAll(destination); err != nil {
+			log.Printf("failed to remove cloned repository: %v", err)
+		}
+
+		if err := os.Remove(archivePath); err != nil && !os.IsNotExist(err) {
+			log.Printf("failed to remove source archive: %v", err)
+		}
+	}()
+
 	if err := gitrepo.Clone(cloneContext, request.RepoURL, destination); err != nil {
 		log.Printf("failed to clone the repository: %v", err)
 
@@ -71,7 +99,6 @@ func HandleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	archivePath := filepath.Join("output", deploymentID+".tar.gz")
 	if err := sourcearchive.Create(destination, archivePath); err != nil {
 		log.Printf("failed to archive repository: %v", err)
 
@@ -81,9 +108,25 @@ func HandleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	objectKey, err := handler.store.UploadArchive(
+		r.Context(),
+		deploymentID,
+		archivePath,
+	)
+	if err != nil {
+		log.Printf("failed to upload source archive: %v", err)
+
+		writeJSON(w, http.StatusBadGateway, errorResponse{
+			Error: "failed to upload source archive",
+		})
+		return
+	}
+
+	log.Printf("uploaded deployment %s to %s", deploymentID, objectKey)
+
 	writeJSON(w, http.StatusAccepted, deployResponse{
 		ID:     deploymentID,
-		Status: "archived",
+		Status: "uploaded",
 	})
 }
 
