@@ -3,7 +3,10 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"mime"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/minio/minio-go/v7"
@@ -103,11 +106,7 @@ func (client *Client) UploadArchive(
 		return "", fmt.Errorf("archive path is required")
 	}
 
-	objectKey := path.Join(
-		"sources",
-		deploymentID,
-		"source.tar.gz",
-	)
+	objectKey := sourceObjectKey(deploymentID)
 
 	_, err := client.api.FPutObject(
 		ctx,
@@ -123,4 +122,86 @@ func (client *Client) UploadArchive(
 	}
 
 	return objectKey, nil
+}
+
+func (client *Client) DeleteArchive(ctx context.Context, deploymentID string) error {
+	deploymentID = strings.TrimSpace(deploymentID)
+	if deploymentID == "" {
+		return fmt.Errorf("deployment ID is required")
+	}
+
+	if err := client.api.RemoveObject(ctx, client.bucket, sourceObjectKey(deploymentID), minio.RemoveObjectOptions{}); err != nil {
+		return fmt.Errorf("delete source archive: %w", err)
+	}
+
+	return nil
+}
+
+func (client *Client) DownloadArchive(ctx context.Context, deploymentID, destination string) error {
+	deploymentID = strings.TrimSpace(deploymentID)
+	if deploymentID == "" {
+		return fmt.Errorf("deployment ID is required")
+	}
+	if strings.TrimSpace(destination) == "" {
+		return fmt.Errorf("destination is required")
+	}
+
+	if err := client.api.FGetObject(ctx, client.bucket, sourceObjectKey(deploymentID), destination, minio.GetObjectOptions{}); err != nil {
+		return fmt.Errorf("download source archive: %w", err)
+	}
+
+	return nil
+}
+
+func (client *Client) UploadDirectory(ctx context.Context, deploymentID, directory string) (int, error) {
+	deploymentID = strings.TrimSpace(deploymentID)
+	if deploymentID == "" {
+		return 0, fmt.Errorf("deployment ID is required")
+	}
+	if strings.TrimSpace(directory) == "" {
+		return 0, fmt.Errorf("directory is required")
+	}
+
+	count := 0
+	err := filepath.WalkDir(directory, func(filePath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("unsupported build output entry %q", filePath)
+		}
+
+		relativePath, err := filepath.Rel(directory, filePath)
+		if err != nil {
+			return err
+		}
+		objectKey := path.Join("dist", deploymentID, filepath.ToSlash(relativePath))
+		contentType := mime.TypeByExtension(filepath.Ext(filePath))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+
+		if _, err := client.api.FPutObject(ctx, client.bucket, objectKey, filePath, minio.PutObjectOptions{
+			ContentType: contentType,
+		}); err != nil {
+			return fmt.Errorf("upload build output %q: %w", relativePath, err)
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		return count, fmt.Errorf("upload build output: %w", err)
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("build output directory is empty")
+	}
+
+	return count, nil
+}
+
+func sourceObjectKey(deploymentID string) string {
+	return path.Join("sources", deploymentID, "source.tar.gz")
 }

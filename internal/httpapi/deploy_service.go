@@ -35,14 +35,21 @@ type archiveStore interface {
 		deploymentID string,
 		archivePath string,
 	) (string, error)
+	DeleteArchive(ctx context.Context, deploymentID string) error
+}
+
+type buildQueue interface {
+	EnqueueBuild(ctx context.Context, deploymentID string) error
+	HasDeployment(ctx context.Context, deploymentID string) (bool, error)
 }
 
 type DeployHandler struct {
 	store archiveStore
+	queue buildQueue
 }
 
-func NewDeployHandler(store archiveStore) *DeployHandler {
-	return &DeployHandler{store: store}
+func NewDeployHandler(store archiveStore, queue buildQueue) *DeployHandler {
+	return &DeployHandler{store: store, queue: queue}
 }
 
 func (handler *DeployHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -124,10 +131,42 @@ func (handler *DeployHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("uploaded deployment %s to %s", deploymentID, objectKey)
 
+	if err := handler.enqueueBuild(r.Context(), deploymentID); err != nil {
+		log.Printf("failed to enqueue deployment %s: %v", deploymentID, err)
+
+		writeJSON(w, http.StatusBadGateway, errorResponse{
+			Error: "failed to queue deployment",
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusAccepted, deployResponse{
 		ID:     deploymentID,
-		Status: "uploaded",
+		Status: "queued",
 	})
+}
+
+func (handler *DeployHandler) enqueueBuild(ctx context.Context, deploymentID string) error {
+	if err := handler.queue.EnqueueBuild(ctx, deploymentID); err != nil {
+		checkContext, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		queued, checkErr := handler.queue.HasDeployment(checkContext, deploymentID)
+		checkCancel()
+		if checkErr != nil {
+			log.Printf("could not verify enqueue outcome for deployment %s: %v", deploymentID, checkErr)
+			return err
+		}
+		if queued {
+			return nil
+		}
+
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if cleanupErr := handler.store.DeleteArchive(cleanupContext, deploymentID); cleanupErr != nil {
+			log.Printf("failed to clean up source archive for deployment %s: %v", deploymentID, cleanupErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func generateDeploymentID() (string, error) {

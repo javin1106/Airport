@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	httpapi "github.com/javin1106/airport/internal/httpapi"
+	"github.com/javin1106/airport/internal/queue"
 	"github.com/javin1106/airport/internal/storage"
 )
 
@@ -55,7 +57,22 @@ func main() {
 		log.Fatalf("prepare object storage: %v", err)
 	}
 
-	deployHandler := httpapi.NewDeployHandler(objectStore)
+	redisAddress := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	if redisAddress == "" {
+		log.Fatal("REDIS_ADDR is required")
+	}
+
+	redisQueue := queue.NewRedis(redisAddress)
+	defer redisQueue.Close()
+
+	redisContext, redisCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer redisCancel()
+
+	if err := redisQueue.Ping(redisContext); err != nil {
+		log.Fatalf("connect to Redis: %v", err)
+	}
+
+	deployHandler := httpapi.NewDeployHandler(objectStore, redisQueue)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
